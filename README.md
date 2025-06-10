@@ -38,7 +38,8 @@ crypto-payment-gateway/
 
 1. Clone repository:
 ```bash
-git clone <repository-url>
+git clone https://github.com/Pendetot/Crypto-Payment-Gateway.git
+     
 cd crypto-payment-gateway
 ```
 
