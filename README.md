@@ -40,7 +40,7 @@ crypto-payment-gateway/
 ```bash
 git clone https://github.com/Pendetot/Crypto-Payment-Gateway.git
      
-cd crypto-payment-gateway
+cd Crypto-Payment-Gateway
 ```
 
 2. Install dependencies:
