@@ -5,14 +5,17 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 
-const paymentRoutes = require('./routes/payment');
-const webhookRoutes = require('./routes/webhook');
-const apiKeyRoutes = require('./routes/apiKeys');
+const paymentRoutes = require('./src/routes/payment');
+const webhookRoutes = require('./src/routes/webhook');
+const apiKeyRoutes = require('./src/routes/apiKeys');
 
-const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
-const { authenticateAPI, defaultAPIKey } = require('./middleware/auth');
+const { errorHandler, notFoundHandler } = require('./src/middleware/errorHandler');
+const { authenticateAPI, defaultAPIKey } = require('./src/middleware/auth');
 
 const app = express();
+
+// Trust proxy settings for reverse proxies (nginx, cloudflare, etc.)
+app.set('trust proxy', 1);
 
 const limiter = rateLimit({
   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW) || 15 * 60 * 1000,
@@ -75,9 +78,18 @@ app.get('/api/docs', (req, res) => {
   res.json({
     success: true,
     data: {
-      title: 'USDT Payment Gateway API',
-      version: '1.0.0',
-      description: 'API for processing USDT payments on Binance Smart Chain',
+      title: 'Multi-Chain Crypto Payment Gateway API',
+      version: '2.0.0',
+      description: 'API for processing USDT and USDC payments on multiple blockchain networks',
+      supportedNetworks: [
+        'Ethereum',
+        'Optimism', 
+        'Arbitrum',
+        'Avalanche',
+        'Base',
+        'BNB Smart Chain'
+      ],
+      supportedTokens: ['USDT', 'USDC'],
       authentication: {
         type: 'API Key',
         header: 'X-API-Key',
@@ -91,6 +103,8 @@ app.get('/api/docs', (req, res) => {
             body: {
               amount: 'number (required)',
               orderId: 'string (required)',
+              network: 'string (optional, default: ethereum)',
+              token: 'string (optional, default: usdt)', 
               metadata: 'object (optional)'
             }
           },
@@ -107,12 +121,34 @@ app.get('/api/docs', (req, res) => {
             permission: 'payment:status'
           },
           'GET /api/payment/balance': {
-            description: 'Get wallet balance',
-            permission: 'payment:balance'
+            description: 'Get wallet balance (all networks or specific)',
+            permission: 'payment:balance',
+            query: {
+              network: 'string (optional)'
+            }
           },
           'GET /api/payment/list': {
             description: 'List payments (Admin only)',
-            permission: 'admin'
+            permission: 'admin',
+            query: {
+              status: 'string (optional)',
+              network: 'string (optional)',
+              token: 'string (optional)',
+              limit: 'number (optional)',
+              offset: 'number (optional)'
+            }
+          },
+          'GET /api/payment/networks': {
+            description: 'Get supported networks',
+            permission: 'payment:status'
+          },
+          'GET /api/payment/networks/:networkKey': {
+            description: 'Get specific network information',
+            permission: 'payment:status'
+          },
+          'GET /api/payment/tokens/:networkKey': {
+            description: 'Get supported tokens for network',
+            permission: 'payment:status'
           }
         },
         apiKeys: {

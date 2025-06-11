@@ -3,6 +3,11 @@ const Joi = require('joi');
 const paymentRequestSchema = Joi.object({
   amount: Joi.number().positive().precision(6).required(),
   orderId: Joi.string().alphanum().min(1).max(100).required(),
+  network: Joi.string().valid(
+    'ethereum', 'optimism', 'arbitrum', 'avalanche', 'base', 'bsc',
+    'sepolia', 'optimism-sepolia', 'arbitrum-sepolia', 'fuji', 'base-sepolia', 'bsc-testnet'
+  ).default('ethereum'),
+  token: Joi.string().valid('usdt', 'usdc').default('usdt'),
   metadata: Joi.object().optional()
 });
 

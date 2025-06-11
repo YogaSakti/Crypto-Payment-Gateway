@@ -1,5 +1,5 @@
 const express = require('express');
-const paymentService = require('../services/paymentService');
+const multiChainPaymentService = require('../services/multiChainPaymentService');
 const { validatePaymentRequest, validateVerificationRequest } = require('../validators/paymentValidator');
 const { authenticateAPI, rateLimitByAPIKey } = require('../middleware/auth');
 
@@ -17,7 +17,7 @@ router.post('/create', authenticateAPI('payment:create'), async (req, res) => {
       });
     }
 
-    const { amount, orderId, metadata } = req.body;
+    const { amount, orderId, network = 'ethereum', token = 'usdt', metadata } = req.body;
     
     const enhancedMetadata = {
       ...metadata,
@@ -26,7 +26,13 @@ router.post('/create', authenticateAPI('payment:create'), async (req, res) => {
       requestedAt: new Date().toISOString()
     };
 
-    const payment = await paymentService.createPayment(amount, orderId, enhancedMetadata);
+    const payment = await multiChainPaymentService.createPayment(
+      amount, 
+      orderId, 
+      network, 
+      token, 
+      enhancedMetadata
+    );
 
     res.json({
       success: true,
@@ -35,17 +41,24 @@ router.post('/create', authenticateAPI('payment:create'), async (req, res) => {
         originalAmount: payment.originalAmount,
         amount: payment.amount,
         walletAddress: payment.walletAddress,
-        trustWalletUrl: payment.trustWalletUrl,
+        contractAddress: payment.contractAddress,
+        network: payment.network,
+        networkKey: payment.networkKey,
+        chainId: payment.chainId,
+        token: payment.token,
+        tokenName: payment.tokenName,
+        decimals: payment.decimals,
+        blockExplorer: payment.blockExplorer,
+        walletUrls: payment.walletUrls,
         qrCode: payment.qrCode,
         expiresAt: payment.expiresAt,
-        network: payment.network,
-        token: payment.token,
-        note: `Please pay exactly ${payment.amount} USDT (${payment.originalAmount} + unique identifier)`,
+        note: `Please pay exactly ${payment.amount} ${payment.token} (${payment.originalAmount} + unique identifier)`,
         instructions: [
-          `1. Send exactly ${payment.amount} USDT to the provided wallet address`,
-          `2. Use BSC (Binance Smart Chain) network`,
-          `3. Payment expires at ${payment.expiresAt}`,
-          `4. You can scan the QR code with Trust Wallet for easy payment`
+          `1. Send exactly ${payment.amount} ${payment.token} to the provided wallet address`,
+          `2. Use ${payment.network} network (Chain ID: ${payment.chainId})`,
+          `3. Token contract: ${payment.contractAddress}`,
+          `4. Payment expires at ${payment.expiresAt}`,
+          `5. You can use the provided wallet URLs for easy payment`
         ]
       }
     });
@@ -71,7 +84,7 @@ router.post('/verify', authenticateAPI('payment:verify'), async (req, res) => {
     
     console.log(`Payment verification requested by ${req.apiKey.name} for payment ${paymentId}`);
     
-    const payment = await paymentService.verifyPayment(paymentId, txHash);
+    const payment = await multiChainPaymentService.verifyPayment(paymentId, txHash);
 
     res.json({
       success: true,
@@ -83,9 +96,12 @@ router.post('/verify', authenticateAPI('payment:verify'), async (req, res) => {
         txHash: payment.txHash,
         confirmations: payment.confirmations,
         verifiedAt: payment.verifiedAt,
+        network: payment.network,
+        token: payment.token,
+        blockExplorer: `${payment.blockExplorer}/tx/${payment.txHash}`,
         message: payment.status === 'confirmed' 
           ? 'Payment confirmed successfully' 
-          : `Payment verified but waiting for ${process.env.MIN_CONFIRMATIONS} confirmations`
+          : `Payment verified but waiting for confirmations (${payment.confirmations} confirmations received)`
       }
     });
   } catch (error) {
@@ -99,7 +115,7 @@ router.post('/verify', authenticateAPI('payment:verify'), async (req, res) => {
 router.get('/status/:paymentId', authenticateAPI('payment:status'), async (req, res) => {
   try {
     const { paymentId } = req.params;
-    const payment = paymentService.getPayment(paymentId);
+    const payment = multiChainPaymentService.getPayment(paymentId);
 
     if (!payment) {
       return res.status(404).json({
@@ -134,7 +150,13 @@ router.get('/status/:paymentId', authenticateAPI('payment:status'), async (req, 
         confirmations: payment.confirmations,
         verifiedAt: payment.verifiedAt,
         network: payment.network,
-        token: payment.token
+        networkKey: payment.networkKey,
+        chainId: payment.chainId,
+        token: payment.token,
+        tokenName: payment.tokenName,
+        contractAddress: payment.contractAddress,
+        blockExplorer: payment.blockExplorer,
+        walletUrls: payment.walletUrls
       }
     });
   } catch (error) {
@@ -147,32 +169,46 @@ router.get('/status/:paymentId', authenticateAPI('payment:status'), async (req, 
 
 router.get('/balance', authenticateAPI('payment:balance'), async (req, res) => {
   try {
-    const [bnbBalance, usdtBalance] = await Promise.all([
-      paymentService.getWalletBalance(),
-      paymentService.getUSDTBalance()
-    ]);
-
-    res.json({
-      success: true,
-      data: {
-        walletAddress: process.env.WALLET_ADDRESS,
-        balances: {
-          BNB: {
-            amount: bnbBalance,
-            symbol: 'BNB',
-            name: 'Binance Coin'
-          },
-          USDT: {
-            amount: usdtBalance,
-            symbol: 'USDT',
-            name: 'Tether USD',
-            contractAddress: process.env.USDT_CONTRACT_ADDRESS
-          }
-        },
-        network: 'BSC (Binance Smart Chain)',
-        lastUpdated: new Date().toISOString()
+    const { network } = req.query;
+    
+    if (network) {
+      // Get balance for specific network
+      const balances = await multiChainPaymentService.getAllBalances();
+      const networkBalance = balances[network];
+      
+      if (!networkBalance) {
+        return res.status(404).json({
+          success: false,
+          error: `Network ${network} not supported or not available`
+        });
       }
-    });
+      
+      res.json({
+        success: true,
+        data: {
+          walletAddress: process.env.WALLET_ADDRESS,
+          network: networkBalance.network,
+          chainId: networkBalance.chainId,
+          balances: {
+            native: networkBalance.native.native,
+            tokens: networkBalance.tokens
+          },
+          lastUpdated: new Date().toISOString()
+        }
+      });
+    } else {
+      // Get balances for all networks
+      const allBalances = await multiChainPaymentService.getAllBalances();
+      
+      res.json({
+        success: true,
+        data: {
+          walletAddress: process.env.WALLET_ADDRESS,
+          networks: allBalances,
+          lastUpdated: new Date().toISOString()
+        }
+      });
+    }
   } catch (error) {
     res.status(500).json({
       success: false,
@@ -183,15 +219,25 @@ router.get('/balance', authenticateAPI('payment:balance'), async (req, res) => {
 
 router.get('/list', authenticateAPI('admin'), async (req, res) => {
   try {
-    const { status, limit = 50, offset = 0 } = req.query;
+    const { status, network, token, limit = 50, offset = 0 } = req.query;
     
-    const payments = Array.from(paymentService.pendingPayments.values())
-      .filter(payment => !status || payment.status === status)
+    const payments = Array.from(multiChainPaymentService.pendingPayments.values())
+      .filter(payment => {
+        if (status && payment.status !== status) return false;
+        if (network && payment.networkKey !== network) return false;
+        if (token && payment.token.toLowerCase() !== token.toLowerCase()) return false;
+        return true;
+      })
       .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
       .slice(offset, offset + parseInt(limit));
 
-    const total = Array.from(paymentService.pendingPayments.values())
-      .filter(payment => !status || payment.status === status).length;
+    const total = Array.from(multiChainPaymentService.pendingPayments.values())
+      .filter(payment => {
+        if (status && payment.status !== status) return false;
+        if (network && payment.networkKey !== network) return false;
+        if (token && payment.token.toLowerCase() !== token.toLowerCase()) return false;
+        return true;
+      }).length;
 
     res.json({
       success: true,
@@ -207,7 +253,11 @@ router.get('/list', authenticateAPI('admin'), async (req, res) => {
           txHash: payment.txHash,
           confirmations: payment.confirmations,
           network: payment.network,
+          networkKey: payment.networkKey,
+          chainId: payment.chainId,
           token: payment.token,
+          tokenName: payment.tokenName,
+          contractAddress: payment.contractAddress,
           metadata: payment.metadata
         })),
         pagination: {
@@ -220,6 +270,79 @@ router.get('/list', authenticateAPI('admin'), async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+router.get('/networks', authenticateAPI('payment:status'), async (req, res) => {
+  try {
+    const supportedNetworks = multiChainPaymentService.getSupportedNetworks();
+    const networksInfo = {};
+    
+    for (const networkKey of supportedNetworks) {
+      try {
+        networksInfo[networkKey] = multiChainPaymentService.getNetworkInfo(networkKey);
+      } catch (error) {
+        console.warn(`Failed to get info for ${networkKey}:`, error.message);
+      }
+    }
+    
+    res.json({
+      success: true,
+      data: {
+        supported: supportedNetworks,
+        details: networksInfo,
+        isTestnet: process.env.NODE_ENV !== 'production'
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+router.get('/networks/:networkKey', authenticateAPI('payment:status'), async (req, res) => {
+  try {
+    const { networkKey } = req.params;
+    const networkInfo = multiChainPaymentService.getNetworkInfo(networkKey);
+    const supportedTokens = multiChainPaymentService.getSupportedTokens(networkKey);
+    
+    res.json({
+      success: true,
+      data: {
+        ...networkInfo,
+        supportedTokens
+      }
+    });
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+router.get('/tokens/:networkKey', authenticateAPI('payment:status'), async (req, res) => {
+  try {
+    const { networkKey } = req.params;
+    const supportedTokens = multiChainPaymentService.getSupportedTokens(networkKey);
+    const networkInfo = multiChainPaymentService.getNetworkInfo(networkKey);
+    
+    res.json({
+      success: true,
+      data: {
+        network: networkInfo.name,
+        chainId: networkInfo.chainId,
+        supportedTokens,
+        tokens: networkInfo.tokens
+      }
+    });
+  } catch (error) {
+    res.status(400).json({
       success: false,
       error: error.message
     });

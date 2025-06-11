@@ -1,6 +1,6 @@
 const express = require('express');
 const crypto = require('crypto');
-const paymentService = require('../services/paymentService');
+const multiChainPaymentService = require('../services/multiChainPaymentService');
 
 const router = express.Router();
 
@@ -27,18 +27,21 @@ router.post('/payment-confirmed', verifyWebhookSignature, async (req, res) => {
   try {
     const { paymentId, txHash, confirmations } = req.body;
     
-    const payment = paymentService.getPayment(paymentId);
+    const payment = multiChainPaymentService.getPayment(paymentId);
     if (!payment) {
       return res.status(404).json({ error: 'Payment not found' });
     }
 
-    if (confirmations >= process.env.MIN_CONFIRMATIONS) {
+    const networkConfig = multiChainPaymentService.getNetworkInfo(payment.networkKey);
+    
+    if (confirmations >= networkConfig.minConfirmations) {
       payment.status = 'confirmed';
       payment.confirmations = confirmations;
       payment.confirmedAt = new Date();
       
       console.log(`Payment ${paymentId} confirmed with ${confirmations} confirmations`);
-      console.log(`Original amount: $${payment.originalAmount}, Paid: $${payment.amount}`);
+      console.log(`Network: ${payment.network}, Token: ${payment.token}`);
+      console.log(`Original amount: $${payment.originalAmount}, Paid: ${payment.amount} ${payment.token}`);
     }
 
     res.json({ success: true });
@@ -50,22 +53,42 @@ router.post('/payment-confirmed', verifyWebhookSignature, async (req, res) => {
 
 router.post('/transaction-notification', verifyWebhookSignature, async (req, res) => {
   try {
-    const { txHash, toAddress, amount, token } = req.body;
+    const { txHash, toAddress, amount, token, network, chainId } = req.body;
     
-    if (toAddress.toLowerCase() === process.env.WALLET_ADDRESS.toLowerCase() &&
-        token.toLowerCase() === process.env.USDT_CONTRACT_ADDRESS.toLowerCase()) {
+    if (toAddress.toLowerCase() === process.env.WALLET_ADDRESS.toLowerCase()) {
+      console.log(`New transaction received: ${txHash}`);
+      console.log(`Network: ${network || 'Unknown'}, Token: ${token}, Amount: ${amount}`);
       
-      console.log(`New USDT transaction received: ${txHash}, Amount: ${amount}`);
-            
-      const paymentMatch = paymentService.findPaymentByAmount(amount);
+      // Try to find matching payment by amount
+      // We need to determine which network this is from
+      let matchingPayment = null;
       
-      if (paymentMatch) {
-        const { paymentId, payment } = paymentMatch;
+      // If network is provided, search in that network
+      if (network) {
+        matchingPayment = multiChainPaymentService.findPaymentByAmount(amount, network, 'usdt');
+        if (!matchingPayment) {
+          matchingPayment = multiChainPaymentService.findPaymentByAmount(amount, network, 'usdc');
+        }
+      } else {
+        // Search across all networks
+        const supportedNetworks = multiChainPaymentService.getSupportedNetworks();
+        for (const networkKey of supportedNetworks) {
+          matchingPayment = multiChainPaymentService.findPaymentByAmount(amount, networkKey, 'usdt');
+          if (matchingPayment) break;
+          
+          matchingPayment = multiChainPaymentService.findPaymentByAmount(amount, networkKey, 'usdc');
+          if (matchingPayment) break;
+        }
+      }
+      
+      if (matchingPayment) {
+        const { paymentId, payment } = matchingPayment;
         
         try {
-          await paymentService.verifyPayment(paymentId, txHash);
+          await multiChainPaymentService.verifyPayment(paymentId, txHash);
           console.log(`Auto-verified payment ${paymentId}`);
-          console.log(`Original amount: $${payment.originalAmount}, Paid: $${payment.amount}`);
+          console.log(`Network: ${payment.network}, Token: ${payment.token}`);
+          console.log(`Original amount: $${payment.originalAmount}, Paid: ${payment.amount} ${payment.token}`);
         } catch (error) {
           console.error(`Auto-verification failed for ${paymentId}:`, error.message);
         }
@@ -73,9 +96,9 @@ router.post('/transaction-notification', verifyWebhookSignature, async (req, res
         console.log(`No matching pending payment found for amount: ${amount}`);
         
         console.log('Current pending payments:');
-        for (const [id, payment] of paymentService.pendingPayments) {
+        for (const [id, payment] of multiChainPaymentService.pendingPayments) {
           if (payment.status === 'pending') {
-            console.log(`- ID: ${id}, Amount: ${payment.amount}, Original: ${payment.originalAmount}`);
+            console.log(`- ID: ${id}, Amount: ${payment.amount} ${payment.token}, Network: ${payment.network}, Original: ${payment.originalAmount}`);
           }
         }
       }
